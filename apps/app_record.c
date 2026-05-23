@@ -461,8 +461,21 @@ static int record_exec(struct ast_channel *chan, const char *data)
 		res = ast_streamfile(chan, "beep", ast_channel_language(chan));
 		if (!res) {
 			res = ast_waitstream(chan, "");
+			if (res == -1) {
+				/* Hangup or error during beep playback */
+				ast_stopstream(chan);
+				ast_debug(1, "Channel hangup detected during beep playback on %s\n", ast_channel_name(chan));
+				status_response = "HANGUP";
+				goto out;
+			}
 		} else {
 			ast_log(LOG_WARNING, "ast_streamfile(beep) failed on %s\n", ast_channel_name(chan));
+			if (ast_check_hangup(chan)) {
+				ast_debug(1, "Channel hangup detected after ast_streamfile failure on %s\n", ast_channel_name(chan));
+				status_response = "HANGUP";
+				res = -1;
+				goto out;
+			}
 			res = 0;
 		}
 		ast_stopstream(chan);
@@ -510,6 +523,16 @@ static int record_exec(struct ast_channel *chan, const char *data)
 
 	if (maxduration <= 0)
 		maxduration = -1;
+
+	/* Safety net: check for hangup before entering the recording loop.
+	 * This handles the case where hangup arrived after the beep (or with
+	 * the quiet option) but before we start reading frames. */
+	if (ast_check_hangup(chan)) {
+		ast_debug(1, "Channel hangup detected before recording loop on %s\n", ast_channel_name(chan));
+		status_response = "HANGUP";
+		res = -1;
+		goto out;
+	}
 
 	start = ast_tvnow();
 	while ((ms = ast_remaining_ms(start, maxduration))) {
